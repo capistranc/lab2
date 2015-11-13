@@ -103,13 +103,16 @@ static osprd_info_t osprds[NOSPRD];
 linked_list_t make_new_list(void) 
 {
 	linked_list_t temp = kmalloc(sizeof(struct linked_list), GFP_ATOMIC);
-	temp->head = kmalloc(sizeof(struct node), GFP_ATOMIC);
+	temp->head = NULL;
+	temp->tail = NULL;
 	temp->length = 0;
+
+	/*temp->head = kmalloc(sizeof(struct node), GFP_ATOMIC);
 
 	temp->tail = temp->head;
 	temp->head->next = NULL;
 	temp->head->prev = NULL;
-	temp->head->pid = -1;
+	temp->head->pid = -1;*/
 
 	return temp;
 }
@@ -122,18 +125,30 @@ node_t makeNewNode(void) {
 	return temp;
 }
 
-void add_node_to_list(linked_list_t list, pid_t value) {
+void add_pid_to_list(linked_list_t list, pid_t value) 
+{
 	node_t temp = makeNewNode();
-	node_t prev_tail = list->tail;
-
-	temp->pid = value;
-	temp->next = NULL;
-	temp->prev = prev_tail;
-
-	prev_tail->next = temp;
-
-	list->tail = temp;
 	list->length++;
+
+	if (list->head == NULL)
+	{
+		list->head = temp;
+		list->head->pid = value;
+		list->tail = list->head;
+	}
+	else 
+	{
+	
+		node_t prev_tail = list->tail;
+
+		temp->pid = value;
+		temp->next = NULL;
+		temp->prev = prev_tail;
+
+		prev_tail->next = temp;
+
+		list->tail = temp;
+	}
 }
 
 node_t find_node(linked_list_t list, pid_t target) {
@@ -154,10 +169,10 @@ void remove_node(linked_list_t list, node_t target)
 	node_t prev_node = target->prev;
     node_t next_node = target->next;
 
-    if (target == list->head) {
-    	next_node->prev = NULL;
-    	list->head = next_node;
-    	
+    if (target == list->head) 
+    {
+    	list->head = NULL;
+    
     } else if (target == list->tail) {
     	prev_node->next = NULL;
     	list->tail = prev_node;
@@ -165,7 +180,6 @@ void remove_node(linked_list_t list, node_t target)
     } else {
 		prev_node->next = target->next;
     	next_node->prev = target->prev;
-
 	}
 
     kfree(target);
@@ -296,11 +310,12 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 
 		osp_spin_unlock(&d->mutex);
 		wake_up_all(&d->blockq);
-
-		// This line avoids compiler warnings ; you may remove it.
 		
-		(void) filp_writable, (void) d;
+		// This line avoids compiler warnings; you may remove it.
+		(void) filp_writable, (void) d;	
 	}
+
+	
 
 	return 0;
 }
@@ -317,21 +332,8 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
 int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		unsigned int cmd, unsigned long arg)
 {
-	osprd_info_t *d = file2osprd(filp);	// device info
-	int ret = 0;			// return value: initially 0
-	unsigned local_ticket;
 
-	// is file open for writing?
-	int filp_writable = (filp->f_mode & FMODE_WRITE) != 0;
-
-	// This line avoids compiler warnings; you may remove it.
-	(void) filp_writable, (void) d;
-
-	// Set 'r' to the ioctl's return value: 0 on success, negative on error
-
-	if (cmd == OSPRDIOCACQUIRE) {
-
-		// EXERCISE: Lock the ramdisk.
+	// EXERCISE: Lock the ramdisk.
 		//
 		// If *filp is open for writing (filp_writable), then attempt
 		// to write-lock the ramdisk; otherwise attempt to read-lock
@@ -357,7 +359,6 @@ int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		// return -ERESTARTSYS.
 		// Otherwise, if we can grant the lock request, return 0.
 
-
 		// 'd->ticket_head' and 'd->ticket_tail' should help you
 		// service lock requests in order.  These implement a ticket
 		// order: 'ticket_tail' is the next ticket, and 'ticket_head'
@@ -367,9 +368,20 @@ int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		// (Some of these operations are in a critical section and must
 		// be protected by a spinlock; which ones?)
 
-		
-		//Case: lost request causes a deadlock if attempting to lock a file
-		//that is already locked
+		// Your code here (instead of the next two lines).
+	osprd_info_t *d = file2osprd(filp);	// device info
+	int ret = 0;			// return value: initially 0
+	unsigned local_ticket;
+
+	// is file open for writing?
+	int filp_writable = (filp->f_mode & FMODE_WRITE) != 0;
+
+	// This line avoids compiler warnings; you may remove it.
+	(void) filp_writable, (void) d;
+
+	// Set 'r' to the ioctl's return value: 0 on success, negative on error
+
+	if (cmd == OSPRDIOCACQUIRE) {
 
 		//write deadlock case
 		if (d->write_pid == current->pid)
@@ -377,29 +389,72 @@ int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		//read deadlock case
 		if (find_node(d->read_pids, current->pid) != NULL)
 			return -EDEADLK;
-
-
-
-
+		
 
 		osp_spin_lock(&d->mutex);
+
 		local_ticket = d->ticket_head;
 		d->ticket_head++;
 
 		osp_spin_unlock(&d->mutex);
+
+
 		if (filp_writable) //Then this is a write lock request
 		{
-			if (wait_event_interruptible(d->blockq, local_ticket == d->ticket_tail) {
-				if (d->ticket_tail == local_ticket) 
-				{
-					d->ticket_tail++;
-					wake_up_all(&d->blockq);
+			//Check for potential deadlock
+			if (wait_event_interruptible(d->blockq, local_ticket == d->ticket_tail 
+				&& d->write_lock_count == 0 && d->read_lock_count == 0) != 0) 
+			{
+				//osp_spin_lock(&d->mutex); 
+				if (local_ticket == d->ticket_tail) {
+					d->ticket_tail++; //increment ticket_tail so it differs from local_ticket
+				} else {
+					d->ticket_head--; //decrement ticket_head in order to reservice the current ticket
 				}
+				//osp_spin_unlock(&d->mutex); 
+				
+				return -ERESTARTSYS;
+			} 
+			else //No potential deadlock
+			{
+				osp_spin_lock(&d->mutex);
+				d->write_pid = current->pid;
+				d->write_lock_count++;
 			}
-		} else //read lock request
-		{
 
+
+		} 
+		else //read lock request
+		{
+			//Check for potential deadlock
+			if (wait_event_interruptible(d->blockq, local_ticket == d->ticket_tail 
+				&& d->write_lock_count == 0 && d->read_lock_count == 0) != 0)
+			{
+				
+				//osp_spin_lock(&d->mutex);
+				if (local_ticket == d->ticket_tail) {
+					d->ticket_tail++;
+				} else {
+					d->ticket_head--;
+				}
+				
+				//osp_spin_unlock(&d->mutex);
+				return -ERESTARTSYS;
+			} 
+			else //No deadlock
+			{
+				osp_spin_lock(&d->mutex);
+				d->read_lock_count++;
+				add_pid_to_list(d->read_pids, current->pid);
+			}
 		}
+
+		d->ticket_tail++;
+		filp->f_flags |= F_OSPRD_LOCKED;
+
+		osp_spin_unlock(&d->mutex);
+
+		return 0;
 
 	} else if (cmd == OSPRDIOCTRYACQUIRE) {
 
@@ -409,13 +464,38 @@ int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		// block.  If OSPRDIOCACQUIRE would block or return deadlock,
 		// OSPRDIOCTRYACQUIRE should return -EBUSY.
 		// Otherwise, if we can grant the lock request, return 0.
+		
+		
+		if (filp_writable) //Then this is a write lock request
+		{
+			if (d->read_lock_count > 0 || d->write_lock_count > 0)
+				return -EBUSY;
 
-		// Your code here (instead of the next two lines).
-		eprintk("Attempting to try acquire\n");
-		ret = -ENOTTY;
+			osp_spin_lock(&d->mutex);
+			d->write_pid = current->pid;
+			d->write_lock_count++;
+		} 
+		else //read lock request
+		{
+			if (d->write_lock_count > 0)
+				return -EBUSY;
+
+			osp_spin_lock(&d->mutex);
+			d->read_lock_count++;
+			add_pid_to_list(d->read_pids, current->pid);
+		}
+
+		d->ticket_tail++;
+		d->ticket_head++;
+		filp->f_flags |= F_OSPRD_LOCKED;
+		osp_spin_unlock(&d->mutex);
+		
+	
+		return 0;
 
 	} else if (cmd == OSPRDIOCRELEASE) {
 
+		
 		// EXERCISE: Unlock the ramdisk.
 		//
 		// If the file hasn't locked the ramdisk, return -EINVAL.
@@ -423,8 +503,34 @@ int osprd_ioctl(struct inode *inode, struct file *filp, //TO BE DONE
 		// the wait queue, perform any additional accounting steps
 		// you need, and return 0.
 
-		// Your code here (instead of the next line).
-		ret = -ENOTTY;
+		int ram_locked = (filp->f_flags & F_OSPRD_LOCKED != 0);
+		
+		if (ram_locked)
+			return -EINVAL;
+
+		osp_spin_lock(&d->mutex);
+
+
+		//Remove write locks
+		if (filp_writable) {
+			d->write_lock_count--;
+			d->write_pid = -1;
+		}
+		else //remove read lock
+		{
+			d->write_lock_count--;
+
+			node_t target = find_node(d->read_pids, current->pid);
+			remove_node(d->read_pids, target);
+		}
+
+
+		filp->f_flags &= ~F_OSPRD_LOCKED;
+		osp_spin_unlock(&d->mutex);
+		wake_up_all(&d->blockq);
+		
+		return 0;
+		//ret = -ENOTTY;
 
 	} else
 		ret = -ENOTTY; /* unknown command */
